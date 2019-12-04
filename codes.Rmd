@@ -1,0 +1,960 @@
+
+### Load required packages
+```{r load required R packages,message=FALSE}
+library(sce)
+library(ggplot2)
+library(grid)
+```
+
+
+### Ilustrating the general distance sampling scheme
+
+```{r figue 1,fig.cap="Figure 1. Illustrating the general distance sampling scheme"}
+
+x=c(9.4, 2.3, 6.1, 9.8, 6.8, 7.8, 6.0, 4.3, 8.1, 3.4)
+y=c(2.4, 4.2, 2.0, 4.5, 5.0, 4.8, 4.1, 2.2, 1.7, 6.9)
+xy=data.frame(x=x,y=y)
+point_x=7
+point_y=3.8
+
+event_x=x[7]
+event_y=y[7]
+
+
+f1=ggplot(xy)+geom_point(aes(x=x,y=y),size=2)+
+  geom_segment(aes(x=event_x,y=event_y,xend=x[6],yend=y[6]),
+               arrow=arrow(length=unit(0.25,"cm")),colour="red")+
+  coord_fixed(ratio = 1)+theme_bw()+
+  theme(plot.margin=unit(rep(1,4),"lines"),
+        legend.position='none',
+        panel.grid.minor=element_blank(),
+        panel.grid.major=element_blank())
+
+f2=ggplot(xy)+geom_point(aes(x=x,y=y),size=2)+
+  geom_segment(aes(x=point_x,y=point_y,xend=x[6],yend=y[6]),
+               arrow=arrow(length=unit(0.25,"cm")),colour="red")+
+  geom_segment(aes(x=point_x,y=point_y,xend=x[7],yend=y[7]),
+               arrow=arrow(length=unit(0.25,"cm")),colour="red")+
+  geom_segment(aes(x=point_x,y=point_y,xend=x[3],yend=y[3]),
+               arrow=arrow(length=unit(0.25,"cm")),colour="red")+
+  geom_segment(aes(x=point_x,y=point_y,xend=x[9],yend=y[9]),
+               arrow=arrow(length=unit(0.25,"cm")),colour="red")+
+  geom_hline(aes(yintercept=point_y),linetype=2)+
+  geom_vline(aes(xintercept=point_x),linetype=2)+
+  coord_fixed(ratio = 1)+
+  geom_point(aes(x=point_x,y=point_y),size=2,colour="red")+
+  theme_bw()+
+  theme(plot.margin=unit(rep(1,4),"lines"),
+        legend.position='none',
+        panel.grid.minor=element_blank(),
+        panel.grid.major=element_blank())
+
+multiplot(f1,f2,cols=2)
+```
+
+
+### Define the testing proceduce for a given population
+
+Define a test function on all possible distance sampling schemes for the six general population density estimators
+
+```{r Define a test function, warning=FALSE,message=FALSE}
+#define the number of focal points should be sampled in each population density estimation
+#let's check performance of DPDEs under large distance sample size
+nfocals=480
+#possible value of k
+ks=1:4
+#possible value of q
+qs=1:4
+#number of repeat for each population and each index
+rep=30
+#number of cpu used
+mc.cores=6
+
+TestOnesp=function(nfocals,onesp,ks,qs,rep=10,bordercorrection=0,...){
+  win=onesp$win
+  sp.ppp=onesp$com
+  area=area.owin(win)
+  obs=data.frame(x=sp.ppp$x,y=sp.ppp$y)
+  #border correction
+	border_xmin=win$xrange[1]
+	border_xmax=win$xrange[2]
+	border_ymin=win$yrange[1]
+	border_ymax=win$yrange[2]
+	
+  validi=1:sp.ppp$n
+
+  if(sp.ppp$n<nfocals){
+    nfocals=sp.ppp$n
+  }
+  etoe_flag=TRUE
+  
+	Ns=matrix(nrow=rep*length(ks)*length(qs),ncol=6+2)
+	Nsi=1
+	#repeat different samples of focal points and event 
+	for(repi in 1:rep){
+		print(repi)
+		#calculate estimates of N under different sampling stratigies
+		for(k in ks){
+			for (q in qs){
+				#keep number of total sample distances fixed, nfocals
+				nqfocals=round(nfocals/q)
+				pfocals=data.frame(x=runif(nqfocals,border_xmin,border_xmax),
+						y=runif(nqfocals,border_ymin,border_ymax))
+				if(etoe_flag){
+					efocali=sample(validi,nqfocals)
+					efocals=data.frame(x=sp.ppp$x[efocali],y=sp.ppp$y[efocali])
+				}
+				#estimateing N by the six general DPDEs
+				pr_samples=knq(pfocals,obs,k=k,q=q,type="ptoe")
+        #get more distance if there are some NA in pr_samples, which caused by edge effect
+        #it works because we treat every distance equally in the population density estimator
+        while(any(is.na(pr_samples))){
+          fill_index=which(is.na(pr_samples))
+          nsfill=length(fill_index)
+          pfocals2=data.frame(x=runif(nsfill*2,border_xmin,border_xmax),
+  					y=runif(nsfill*2,border_ymin,border_ymax))
+          pr_samples2=knq(pfocals2,obs,k=k,q=q,type="ptoe")
+          pr_samples2=pr_samples2[!is.na(pr_samples2)]
+            oknr=length(pr_samples2)
+          if(oknr>=nsfill){
+            pr_samples[fill_index]=sample(pr_samples2,nsfill)
+          }else if(oknr>0){
+            pr_samples[fill_index[1:oknr]]=pr_samples2
+          }
+        }
+          
+				N1p_estimate=gsimpleDPDE(pr_samples,k,area)
+        Ngp_estimate=gnonrandomDPDE2(pr_samples,"ptoe",k,area)
+        
+				if(etoe_flag){
+					er_samples=knq(efocals,obs,k=k,q=q,type="etoe")
+          #get more distances to replace NA
+          while(any(is.na(er_samples))){
+            fill_index=which(is.na(er_samples))
+            nsfill=length(fill_index)
+            if( (nsfill*2)< sp.ppp$n){
+              efocali2=sample(validi,nsfill*2)
+            }else if ((nsfill)< sp.ppp$n){
+              efocali2=sample(validi,nsfill)
+            }else{
+              efocali2=sample(validi,sp.ppp$n)
+            }
+          
+  				  efocals2=data.frame(x=sp.ppp$x[efocali2],y=sp.ppp$y[efocali2])
+            er_samples2=knq(efocals2,obs,k=k,q=q,type="etoe")
+            er_samples2=er_samples2[!is.na(er_samples2)]
+            oknr=length(er_samples2)
+            if(oknr>nsfill){
+              er_samples[fill_index]=sample(er_samples2,nsfill)
+            }else if(oknr>0){
+              er_samples[fill_index[1:oknr]]=er_samples2
+            }
+          }
+					N1e_estimate=gsimpleDPDE(er_samples,k,area)
+					Nge_estimate=gnonrandomDPDE2(er_samples,"etoe",k,area)
+          
+					pr_halfi=sample(1:nqfocals,round(nqfocals/2))
+					er_halfi=sample(1:nqfocals,nqfocals-length(pr_halfi))
+					
+					pr_samples_half=pr_samples[pr_halfi,]
+					er_samples_half=er_samples[er_halfi,]
+					dim(pr_samples_half)=c(length(pr_halfi),q)
+					dim(er_samples_half)=c(length(er_halfi),q)
+					
+					Nc_estimate=gcompositeDPDE(pr_samples_half,er_samples_half,k,area)
+          Ncng_estimate=gnrcompositeDPDE(pr_samples_half,er_samples_half,k,area)
+				}else{
+					Nc_estimate=NA
+					N1e_estimate=NA
+					Nge_estimate=NA
+				}
+
+				#store estiamtions
+				Ns[Nsi,]=c(N1p_estimate,N1e_estimate,Nc_estimate,Ngp_estimate,Nge_estimate,
+				           Ncng_estimate,attr(Ngp_estimate,"a"),attr(Nge_estimate,"a"))
+				Nsi=Nsi+1
+			}
+		}
+	}
+	Nsq=rep(qs,times=length(ks)*rep)
+	Nsk=rep(rep(ks,each=length(qs)),times=rep)
+	Nsrep=rep(1:rep,each=length(qs)*length(ks))
+	Ns=cbind(Nsrep,Nsk,Nsq,Ns)
+	colnames(Ns)=c("rep","k","q","ptoeN","etoeN","Nc","ptoeNg","etoeNg","NcNg","ap","ae")
+	return(Ns)
+}
+```
+
+### Performance test by simulated populations  
+
+#### Generate the simulated populations
+
+```{r figure 2, fig.cap="Spatial distributions of simulated populations from highly aggregated to almost completely random"}
+#the range of the simulated community
+win=owin(c(0,100),c(0,100))
+#number of simulated population at each aggregative level
+npops=30
+#number of grids used to generate the simulated population 
+nxy=c(20,20)
+#intensity of individuals, therefore the expected number individual within the overal range is lam*area=1000
+lam=0.1
+#aggregated index, the larger the as is, the more aggregate the population is
+as=rep(seq(0.01,10,length.out=30),each=npops)
+
+sim_file1="./repo/type1_simulated_populations.RData"
+if(!file.exists(sim_file1)){
+  type1_sim_pops=list()
+  for(i in 1:length(as)){
+    #the abundance of the simulated populations in a given size quadrat follows negative binomial distribution
+    type1_sim_pops[[i]]=rPopNeg(lam,as[i],win,nxy)
+  }
+  save(type1_sim_pops,file=sim_file1)
+}else{
+  load(sim_file1)
+}
+
+
+type=rep(c("k=100","k=0.29","k=0.01"),times=c(type1_sim_pops[[1]]$N,type1_sim_pops[[1+10*npops]]$N,type1_sim_pops[[30*npops]]$N))
+x=c(type1_sim_pops[[1]]$com$x,type1_sim_pops[[1+10*npops]]$com$x,type1_sim_pops[[30*npops]]$com$x)
+y=c(type1_sim_pops[[1]]$com$y,type1_sim_pops[[1+10*npops]]$com$y,type1_sim_pops[[30*npops]]$com$y)
+
+simpops=data.frame(x=x,y=y,type=type)
+
+ggplot(simpops)+geom_point(aes(x=x,y=y),size=0.5)+
+  facet_wrap(~type)+coord_fixed(ratio = 1)+
+  theme_bw()+
+  theme(plot.margin=unit(rep(1,4),"lines"),
+        legend.position='none',
+        panel.grid.minor=element_blank(),
+        panel.grid.major=element_blank())
+
+```
+
+#### Test the performance of the density estimators
+
+once we have the simulated popultions, we can run the test function defined above on each simulated populations
+```{r performance test under simulated populations}
+#distance to the edge used in border edge correction
+bordercorrection=3
+
+simu_re1_file="./repo/type1_simulated_results.RData"
+if(!file.exists(simu_re1_file)){
+  all_sim1_re=mclapply(type1_sim_pops,TestOnesp,nfocals=nfocals,ks=ks,qs=qs,rep=rep,bordercorrection=bordercorrection,mc.cores=mc.cores)
+  save(all_sim1_re,file=simu_re1_file)
+  sendmail(recipient="gcshen@des.ecnu.edu.cn",subject="DPDE simulation test by type 1 populations just finished")
+}else{
+  load(simu_re1_file)
+}
+
+
+```
+
+
+### Performance test of the DPDE by real tree populations
+
+#### By populations in the BCI
+```{r By BCI}
+load("./data/BCI_scp_1000by500.RData")
+com=BCI
+#remove rare species with less than 5 individuals
+com=removeRareSpecies(com,minN=5)
+#remove a extremely unusual species ANAXPA
+com=removeSpecies(com,"ANAXPA")
+
+sp=com$sp
+allpops=splitToPopu(com)
+
+#filename="./repo/BCI real results.RData"
+filename="./repo/BCI real results final.RData"
+if(!file.exists(filename)){
+  allre=mclapply(allpops,TestOnesp,nfocals=nfocals,ks=ks,qs=qs,rep=rep,bordercorrection=10,mc.cores=mc.cores)
+  #calculate the distance based aggregated index
+  HSindexes=numeric()
+  for(spi in 1:length(sp)){
+   sp.ppp=allpops[[spi]]$com
+   nfl=400
+   if(nfl>sp.ppp$n)
+     nfl=sp.ppp$n
+   HSindexes[spi]=mean(replicate(10,HSindex(sp.ppp,nfl)))
+  }
+
+  save(allre,HSindexes,file=filename)
+  sendmail(recipient="gcshen@des.ecnu.edu.cn",subject="performance test of DPDE on real BCI populations finished")
+}else{
+  load(filename)
+}
+
+
+```
+
+#### By populations in the HSD
+```{r by HSD}
+load("./data/HSD_scp.RData")
+com2=HSD
+#remove rare species with less than 5 individuals
+com2=removeRareSpecies(com2,minN=5)
+
+sp2=com2$sp
+allpops2=splitToPopu(com2)
+
+#filename2="./repo/HSD real results.RData"
+filename2="./repo/HSD real results final.RData"
+if(!file.exists(filename2)){
+  allre2=mclapply(allpops2,TestOnesp,nfocals=nfocals,ks=ks,qs=qs,rep=rep,bordercorrection=10,mc.cores=mc.cores)
+  #calculate the distance based aggregated index
+  HSindexes2=numeric()
+  for(spi in 1:length(sp2)){
+   sp.ppp=allpops2[[spi]]$com
+   HSindexes2[spi]=mean(replicate(10,HSindex(sp.ppp,400)))
+  }
+
+  save(allre2,HSindexes2,file=filename2)
+  sendmail(recipient="gcshen@des.ecnu.edu.cn",subject="performance test of DPDE on real HSD populations finished")
+}else{
+  load(filename2)
+}
+
+```
+
+#### By populations in the TTS
+```{r by TTS}
+load("./data/TTS_scp.RData")
+com3=TTS
+#remove rare species with less than 500 individuals
+com3=removeRareSpecies(com3,minN=5)
+
+sp3=com3$sp
+allpops3=splitToPopu(com3)
+
+#filename3="./repo/TTS real results.RData"
+filename3="./repo/TTS real results final.RData"
+if(!file.exists(filename3)){
+  allre3=mclapply(allpops3,TestOnesp,nfocals=nfocals,ks=ks,qs=qs,rep=rep,bordercorrection=10,mc.cores=mc.cores)
+  #calculate the distance based aggregated index
+  HSindexes3=numeric()
+  for(spi in 1:length(sp3)){
+   sp.ppp=allpops3[[spi]]$com
+   HSindexes3[spi]=mean(replicate(10,HSindex(sp.ppp,400)))
+  }
+
+  save(allre3,HSindexes3,file=filename3)
+  sendmail(recipient="gcshen@des.ecnu.edu.cn",subject="performance test of DPDE on real TTS populations finished")
+}else{
+  load(filename3)
+}
+
+```
+
+
+### Performance of the DPDE on simulated data
+```{r figure 3, fig.cap="Performance of the population density estimators by simulated populations"}
+#total performance
+#the type 1 populations
+sim1_RRMSE=matrix(nrow=length(all_sim1_re),ncol=6)
+
+for(i in 1:length(all_sim1_re)){
+  sim1_RRMSE[i,]=apply(all_sim1_re[[i]][,-c(1:3)], 2, function(x) RRMSE(type1_sim_pops[[i]]$N,x))
+}
+
+estimators=rep(colnames(all_sim1_re[[1]])[-c(1:3)],each=length(all_sim1_re))
+sim1_RRMSE=data.frame(estimator=estimators,aggre=rep(as,6),RRMSE=as.vector(sim1_RRMSE))
+
+group1=paste(sim1_RRMSE$aggre,sim1_RRMSE$estimator)
+sim1_re=data.frame(aggre=rep(as.numeric(sort(as.character(unique(as)))),each=6),
+                   estimator=rep(colnames(all_sim1_re[[1]])[-c(1:3)],length(unique(as))),
+                   mean=tapply(sim1_RRMSE$RRMSE,group1,mean),
+                   sd=tapply(sim1_RRMSE$RRMSE,group1,sd))
+
+#this two new indexes works not very well, so just remove it from results
+del=which( sim1_re$estimator=="NcNg")
+sim1_re=sim1_re[-del,]
+
+sim1_re$estimator=as.factor(as.character(sim1_re$estimator))
+
+leglabels=c(expression(italic(lambda[s_ttot])),expression(italic(lambda[n_ttot])),
+            expression(italic(lambda[c])),expression(italic(lambda[s_ptot])),
+            expression(italic(lambda[n_ptot])))
+
+ggplot(sim1_re,aes(x=aggre,y=mean,color=estimator))+geom_point()+geom_line()+
+  geom_errorbar(aes(x=aggre,ymin=mean-sd,ymax=mean+sd))+
+  xlab("1/k")+ylab("Mean RRMSE")+
+  scale_colour_discrete(name="Estimator",breaks=c("etoeN","etoeNg","Nc","ptoeN","ptoeNg"),labels=leglabels)+
+    theme_bw()+
+  theme(plot.margin=unit(rep(1,4),"lines"),
+        panel.grid.minor=element_blank(),
+        panel.grid.major=element_blank())
+
+```
+
+### Performance of the population density estimator on real data
+```{r figure 4, fig.cap="Performance of the population density estimators by real populations"}
+
+focalN=function(onesp,bordercorrection=0){
+  win=onesp$win
+  sp.ppp=onesp$com
+
+  #border correction
+  border_xmin=win$xrange[1]+bordercorrection
+	border_xmax=win$xrange[2]-bordercorrection
+	border_ymin=win$yrange[1]+bordercorrection
+	border_ymax=win$yrange[2]-bordercorrection
+	
+	validi=sp.ppp$x>border_xmin & sp.ppp$x < border_xmax & 
+					sp.ppp$y>border_ymin & sp.ppp$y< border_ymax
+  n=sum(validi)
+  return(n)
+}
+
+com_RRMSE=function(allre,allpops,HSindexes){
+real_RRMSE=matrix(nrow=length(allre),ncol=6)
+for(i in 1:length(allre)){
+  real_RRMSE[i,]=apply((allre[[i]])[,c(4:9)],2,function(x) RRMSE(focalN(allpops[[i]]),x))
+}
+
+estimators=rep(colnames(allre[[1]])[c(4:9)],each=length(allpops))
+breaks=round(quantile(HSindexes,seq(0,1,length.out=4)),2)
+breaks[4]=Inf
+HSindex_class=cut(HSindexes,breaks=breaks,include.lowest=TRUE)
+real_RRMSE=data.frame(estimator=estimators,
+                      aggre=as.factor(rep(HSindex_class,6)),RRMSE=(as.vector(real_RRMSE)))
+
+del=which(real_RRMSE$estimator=="NcNg" )
+real_RRMSE=real_RRMSE[-del,]
+real_RRMSE$estimator=as.factor(as.character(real_RRMSE$estimator))
+
+real_mean=tapply(real_RRMSE$RRMSE,list(real_RRMSE$estimator,real_RRMSE$aggre),mean)
+real_sd=tapply(real_RRMSE$RRMSE,list(real_RRMSE$estimator,real_RRMSE$aggre),sd)
+
+real_RRMSE2=data.frame(estimator=rep(rownames(real_mean),times=dim(real_mean)[2]),
+            aggre=(rep(factor(colnames(real_mean),levels=colnames(real_mean)),each=dim(real_mean)[1])),
+            RRMSE_mean=as.vector(real_mean),RRMSE_sd=as.vector(real_sd))
+
+real_RRMSE2$ymax=real_RRMSE2$RRMSE_mean+real_RRMSE2$RRMSE_sd
+real_RRMSE2$ymin=real_RRMSE2$RRMSE_mean-real_RRMSE2$RRMSE_sd
+real_RRMSE2$ymin[real_RRMSE2$ymin<0]=0
+return(real_RRMSE2)
+}
+
+com_estN=function(allre,allpops){
+  meanN_est=unlist(lapply(allre,function(x) apply(x[,c(4:9)],2,mean,na.rm=T)))
+estimator=rep(colnames(allre[[1]])[c(4:9)],times=length(meanN_est)/6)
+realN=rep(unlist(lapply(allpops,function(x) focalN(x))),each=6)
+
+real_estN=data.frame(realab=realN,estab=meanN_est,ests=estimator)
+del=which(real_estN$ests=="NcNg")
+real_estN=real_estN[-del,]
+real_estN$ests=as.factor(as.character(real_estN$ests))
+
+return(real_estN)
+}
+
+bci_RRMSE=com_RRMSE(allre,allpops,HSindexes)
+bci_estN=com_estN(allre,allpops)
+
+hsd_RRMSE=com_RRMSE(allre2,allpops2,HSindexes2)
+hsd_estN=com_estN(allre2,allpops2)
+
+tts_RRMSE=com_RRMSE(allre3,allpops3,HSindexes3)
+tts_estN=com_estN(allre3,allpops3)
+
+all_RRMSE=rbind(bci_RRMSE,hsd_RRMSE,tts_RRMSE)
+all_RRMSE$com=rep(c("BCI","HSD","TTS"),times=c(dim(bci_RRMSE)[1],dim(hsd_RRMSE)[1],dim(tts_RRMSE)[1]))
+all_estN=rbind(bci_estN,hsd_estN,tts_estN)
+all_estN$com=rep(c("BCI","HSD","TTS"),times=c(dim(bci_estN)[1],dim(hsd_estN)[1],dim(tts_estN)[1]))
+
+
+dodge <- position_dodge(width=0.9)
+
+f41=ggplot(all_RRMSE,aes(x=aggre,y=RRMSE_mean,fill=estimator))+
+  geom_bar(position=dodge,stat="identity")+
+  geom_errorbar(position=dodge,aes(ymax=ymax,ymin=ymin),width=0.25)+
+  xlab("Aggregation index")+ylab("Population Mean RRMSE")+
+  scale_fill_discrete(name="Estimator",breaks=c("etoeN","etoeNg","Nc","ptoeN","ptoeNg"),labels=leglabels)+
+  coord_cartesian(ylim=c(0,2.1))+facet_wrap(~com,scales="free_x")+
+  theme_bw()+
+  theme(plot.margin=unit(rep(1,4),"lines"),
+        panel.grid.minor=element_blank(),
+        panel.grid.major=element_blank())
+
+
+f42=ggplot(all_estN)+
+  geom_point(aes(x=log(realab),y=log(estab),colour=all_estN$ests))+
+  geom_abline(intercept=0,slope=1)+xlab("log(real population size)")+ylab("log(estimated population size)")+
+  scale_color_discrete(guide = FALSE)+facet_wrap(~com)+
+  theme_bw()+
+  theme(plot.margin=unit(rep(1,4),"lines"),
+        legend.position='none',
+        panel.grid.minor=element_blank(),
+        panel.grid.major=element_blank())
+
+multiplot(f42,f41)
+
+```
+
+```{r Figure S1,warning=FALSE,message=FALSE,error=FALSE,fig.cap="Figure S1. Performance of the nonrandom estimators for the species whose distributions do not follow the negative binomial distribution"}
+#test whether distribution of populations follows negative bionormal distribution
+#for BCI plot
+ngpvalues=numeric()
+for(i in 1:length(allpops)){
+  if(allpops[[i]]$com$n>100){
+    ncounts=as.numeric(quadratcount(allpops[[i]]$com,nx=1000/20,ny=500/20))
+    mu=mean(ncounts)
+    size=mu^2/(var(ncounts)-mu)
+    temp=try(ks.test(x=ncounts,y=rnbinom(100000,mu=mu,size=size))$p.value)
+    if(class(temp)!="try-error"){
+      ngpvalues[i]=temp
+    }
+  }
+}
+
+nonpi=which(ngpvalues<0.05)
+nonpi=c(13,74,231)
+
+par(mfrow=c(2,2))
+par(mai=c(0.1,0.1,0.3,0.1))
+
+plot(allpops[[nonpi[1]]],main="A) Annona acuminata")
+plot(allpops[[nonpi[2]]],main="B) Eugenia oerstediana")
+plot(allpops[[nonpi[3]]],main="C) Trichilia tuberculata")
+
+estNpi=com_estN(allre[nonpi],allpops[nonpi])[c(4,5,9,10,14,15),]
+par(mai=c(0.9,0.9,0.7,0.7))
+plot(x=c(5.8,9.5),y=c(5.5,9.7),type="n",
+     xlab="Log(real population size)",ylab="Log(Esimated population size)")
+points(x=log(estNpi$realab),y=log(estNpi$estab),col=as.numeric(estNpi$ests)+1,pch=rep(c(18,17),time=3))
+abline(a=0,b=1,lty=2)
+text(x=6.2,y=6.5,labels=c("A"))
+text(x=7.5,y=8,labels=c("B"))
+text(x=9.35,y=8.8,labels=c("C"))
+
+```
+
+
+From this figure, the event to event nonrandom DPDE works better under various population distribution.
+
+The relationship between sampling parameters and the performance of the DPDE
+```{r}
+par_cor=function(all_sim1_re,type1_sim_pops){
+  nca1=dim(all_sim1_re[[1]])[1]
+typ1=paste(all_sim1_re[[1]][,2],all_sim1_re[[1]][,3])
+typlist=unique(typ1)
+sim2_RRMSE=matrix(nrow=length(typlist)*length(all_sim1_re),ncol=dim(all_sim1_re[[1]])[2]-3)
+for(i in 1:length(all_sim1_re)){
+  istart=1+(i-1)*length(typlist)
+  iend=i*length(typlist)
+  sim2_RRMSE[istart:iend,]=apply(all_sim1_re[[i]][,-c(1:3)], 2, function(x) tapply(1:nca1,typ1,function(y) RRMSE(type1_sim_pops[[i]]$N,x[y])))
+}
+colnames(sim2_RRMSE)=colnames(all_sim1_re[[1]][,-c(1:3)])
+sim2_RRMSE=as.data.frame(sim2_RRMSE)
+
+sim2_RRMSE$k=rep(as.numeric(unlist(lapply(strsplit(unique(typ1)," "),function(x) x[1]))),times=length(all_sim1_re))
+sim2_RRMSE$q=rep(as.numeric(unlist(lapply(strsplit(unique(typ1)," "),function(x) x[2]))),times=length(all_sim1_re))
+
+re_ptoeN=summary(lm(ptoeN~k+q,data=sim2_RRMSE))
+re_etoeN=summary(lm(etoeN~k+q,data=sim2_RRMSE))
+re_Nc=summary(lm(Nc~k+q,data=sim2_RRMSE))
+re_ptoeNg=summary(lm(ptoeNg~k+q,data=sim2_RRMSE))
+re_etoeNg=summary(lm(etoeNg~k+q,data=sim2_RRMSE))
+
+table1=matrix(nrow=2,ncol=5)
+rownames(table1)=c("k","q")
+colnames(table1)=colnames(all_sim1_re[[1]][,-c(1:3)])[1:5]
+signal=c("-","0","+")
+table1[,1]=paste(signal[sign(re_ptoeN$coefficients[-1,1])+2],changeTostar(re_ptoeN$coefficients[-1,4]))
+table1[,2]=paste(signal[sign(re_etoeN$coefficients[-1,1])+2],changeTostar(re_etoeN$coefficients[-1,4]))
+table1[,3]=paste(signal[sign(re_Nc$coefficients[-1,1])+2],changeTostar(re_Nc$coefficients[-1,4]))
+table1[,4]=paste(signal[sign(re_ptoeNg$coefficients[-1,1])+2],changeTostar(re_ptoeNg$coefficients[-1,4]))
+table1[,5]=paste(signal[sign(re_etoeNg$coefficients[-1,1])+2],changeTostar(re_etoeNg$coefficients[-1,4]))
+
+  
+  return(table1)
+} 
+
+table11=par_cor(all_sim1_re,type1_sim_pops)
+table12=par_cor(allre,allpops)
+table13=par_cor(allre2,allpops2)
+table14=par_cor(allre3,allpops3)
+
+table2=rbind(table11,table12,table13,table14)
+table2=cbind(rep(c("Simulated","BCI","HSD","TTS"),each=2),table2)
+rownames(table2)=NULL
+knitr::kable(table2)
+```
+
+
+## comparison between our best nonrandom estimator and other robust methods
+```{r comparison between our best nonrandom estimator and other robust methods}
+#define the Picard and Bar-Hend's (2007) estimator
+
+#define the likelihood of a Matern point process
+pdgamma_x=function(x,R,w,mu,p){
+  lambda=w*mu
+  m=lambda*pi*x^2
+  rz=function(z) {acos(z)-z*sqrt(1-z^2)}
+  #the pair correlation function
+  gr=function(r) {
+    sel=r <= (2*R)
+    re=numeric(length=length(r))
+    re[sel]=1+2/(w*(pi*R)^2)*rz(r[sel]/2/R)
+    re[!sel]=1
+    return(re)
+  }
+  
+  jxinner=function(u) rz(u)*u*gr(2*x*u)
+  
+  jx=16/pi*integrate(jxinner,lower = 0,upper = 1)$value
+  
+  k=1/(jx-1)
+  
+  pdkx=-k^2*4/x*(8/pi*integrate(function(u) acos(u)*u*gr(2*x*u),lower = 0,upper = 1)$value -jx)
+    
+  pdgmma=function(i) dnbinom(i,mu=m,size=k)*(pdkx*(digamma(k+i)-digamma(k)+log(k/(m+k))+(m-i)/(m+k) )+2*i/x-2*lambda*pi*x*(i+k)/(m+k) )
+  
+  re=sum(unlist(lapply(0:(p-1),pdgmma)))
+  
+  return(re)
+}
+
+#r is the vector of sampled distances
+#k is the order neighborhood distance
+picard_estimator=function(r,k,area){
+  if(inherits(r,"matrix")) r=as.numeric(r)
+  
+  obj_fun=function(par,r,k) {
+    tot=0
+    mu=par[1]
+    w=par[2]
+    R=par[3]
+    #browser()
+    if(mu<0 | R<0 | w<0) return(Inf)
+    
+    for(ri in r){
+      if(!is.na(ri)){
+        tot=tot+sum(log(-pdgamma_x(ri,R,w,mu,k)))
+      }
+    }
+    #tot could be NA
+    tot=-tot
+    if(tot==Inf | is.na(tot)) tot=9999999999
+    
+    return(tot)
+  }
+  #browser()
+  N_gest=(length(r)-1)/pi/sum(r[!is.na(r)]^2)
+  #maximuize the sum of log likelihood
+  est_par=list(convergence=1)
+  ntry=0
+  while(est_par$convergence!=0 & ntry<=5){
+    est_par=try(optim(c(runif(1,1,5),N_gest/runif(1,2,10)/area,runif(1,10,30)),fn=obj_fun,r=r,k=k,control = list(maxit=10000)))
+    if(class(est_par)=="try-error"){
+      est_par=list(convergence=1)
+    }
+    ntry=ntry+1
+  }
+  
+  if(est_par$convergence==0){
+    return(prod(est_par$par[1:2])*area)
+  }else{
+    return(NA)
+  }
+}
+
+PE_estimator=function(r,k,area){
+  return(k/pi/median(r^2)*area)
+}
+
+#r1 and r2 is the distances to the kth and (k+1)th distance
+#each sample size should be divided by 2
+KV_estimator=function(r1,r2,k,area){
+  return(k/pi/mean(r1)/mean(r2)*area)
+}
+
+GP_estimator=function(r,k,area){
+  fden=function(alpha,beta,r,k){
+    2*pi^k*r^(2*k-1)*gamma(k+alpha)/gamma(alpha)/gamma(k)*beta^(-alpha)*(1/beta+pi*r^2)^(-1*(k+alpha))
+  }
+  
+  obj_fun2=function(par,r,k){
+    alpha=par[1]
+    beta=par[2]
+    if(alpha<=1 | beta<0) return(Inf)
+    total=sum(log(fden(alpha,beta,r,k)))
+    
+    return(-total)
+  }
+  
+  N_gest=(length(r)-1)/pi/sum(r[!is.na(r)]^2)
+  est_par=list(convergence=1)
+  ntry=0
+  while(est_par$convergence!=0 & ntry<=5){
+    est_par=optim(c(2,N_gest/2),fn=obj_fun2,r=r,k=k,control = list(maxit=10000))
+    ntry=ntry+1
+  }
+  
+  if(est_par$convergence==0){
+    return(prod(est_par$par[1:2])*area)
+  }else{
+    return(NA)
+  }
+  
+}
+
+
+adaptive_estimator=function(GP,KV,PE,n,k,MV,VR){
+  #browser()
+  X=matrix(c(1,MV,VR,k,10),5,1)
+  #using parameters in the Magnussen et al. 2012
+  beta=matrix(c(0,-0.79,-0.5,0,-0.24,-0.15,0,-0.55,-0.47,0,2.31,1.81,0,-1.03,0.22),3,5)
+  tp=exp(beta%*%X)
+  w1=1/(1+sum(tp[-1]))
+  w2=tp[2]*w1
+  w3=tp[3]*w1
+  return(w1*GP+w2*KV+w3*PE)
+}
+
+TestOnesp_other=function(nfocals,onesp,ks,qs,rep=10,bordercorrection=0,...){
+  win=onesp$win
+  sp.ppp=onesp$com
+  area=area.owin(win)
+  obs=data.frame(x=sp.ppp$x,y=sp.ppp$y)
+  #border correction
+	border_xmin=win$xrange[1]
+	border_xmax=win$xrange[2]
+	border_ymin=win$yrange[1]
+	border_ymax=win$yrange[2]
+	
+  validi=1:sp.ppp$n
+
+  if(sp.ppp$n<nfocals){
+    nfocals=sp.ppp$n
+  }
+  etoe_flag=FALSE
+  
+	Ns=matrix(nrow=rep*length(ks)*length(qs),ncol=6)
+	Nsi=1
+	#repeat different samples of focal points and event 
+	for(repi in 1:rep){
+		print(repi)
+		#calculate estimates of N under different sampling stratigies
+		for(k in ks){
+			for (q in qs){
+				#keep number of total sample distances fixed, nfocals
+				nqfocals=round(nfocals/q)
+				pfocals=data.frame(x=runif(nqfocals,border_xmin,border_xmax),
+						y=runif(nqfocals,border_ymin,border_ymax))
+				if(etoe_flag){
+					efocali=sample(validi,nqfocals)
+					efocals=data.frame(x=sp.ppp$x[efocali],y=sp.ppp$y[efocali])
+				}
+				#estimateing N by the six general DPDEs
+				pr_samples=knq(pfocals,obs,k=k,q=q,type="ptoe")
+        #get more distance if there are some NA in pr_samples, which caused by edge effect
+        #it works because we treat every distance equally in the population density estimator
+        while(any(is.na(pr_samples))){
+          fill_index=which(is.na(pr_samples))
+          nsfill=length(fill_index)
+          pfocals2=data.frame(x=runif(nsfill*2,border_xmin,border_xmax),
+  					y=runif(nsfill*2,border_ymin,border_ymax))
+          pr_samples2=knq(pfocals2,obs,k=k,q=q,type="ptoe")
+          pr_samples2=pr_samples2[!is.na(pr_samples2)]
+            oknr=length(pr_samples2)
+          if(oknr>=nsfill){
+            pr_samples[fill_index]=sample(pr_samples2,nsfill)
+          }else if(oknr>0){
+            pr_samples[fill_index[1:oknr]]=pr_samples2
+          }
+        }
+        
+				#get k+1 samples
+				pr_samples_k1=knq(pfocals,obs,k=k+1,q=q,type="ptoe")
+        #get more distance if there are some NA in pr_samples, which caused by edge effect
+        #it works because we treat every distance equally in the population density estimator
+        while(any(is.na(pr_samples_k1))){
+          fill_index=which(is.na(pr_samples_k1))
+          nsfill=length(fill_index)
+          pfocals2=data.frame(x=runif(nsfill*2,border_xmin,border_xmax),
+  					y=runif(nsfill*2,border_ymin,border_ymax))
+          pr_samples_k12=knq(pfocals2,obs,k=k+1,q=q,type="ptoe")
+          pr_samples_k12=pr_samples_k12[!is.na(pr_samples_k12)]
+            oknr=length(pr_samples_k12)
+          if(oknr>=nsfill){
+            pr_samples_k1[fill_index]=sample(pr_samples_k12,nsfill)
+          }else if(oknr>0){
+            pr_samples_k1[fill_index[1:oknr]]=pr_samples_k12
+          }
+        }
+				
+				pica_estimate=picard_estimator(pr_samples,k,area) 
+				pe_estimate=PE_estimator(pr_samples,k,area)
+				gp_estimate=GP_estimator(pr_samples,k,area)
+				Ngp_estimate=gnonrandomDPDE2(pr_samples,"ptoe",k,area)
+				
+				sel=sample(1:length(pr_samples),ceiling(length(pr_samples)/2))
+				kv_estimate=KV_estimator(pr_samples[sel],pr_samples_k1[sel],k,area)
+				
+				#calculate the adaptive estimator by Magnussen et al. 2007
+				MV=mean(pr_samples,na.rm=T)/var(pr_samples,na.rm=T)
+				VR=(gamma(k)*gamma(k+1)-gamma(k+0.5)^2)/(pi*(length(pr_samples)*k-1)/pi/(mean(pr_samples,na.rm=T))^2*factorial(k-1)*gamma(k))
+				adap_estimate=adaptive_estimator(gp_estimate,kv_estimate,pe_estimate,length(pr_samples),k,MV,VR)
+				
+				#store estiamtions
+				Ns[Nsi,]=c(Ngp_estimate,pica_estimate,pe_estimate,kv_estimate,gp_estimate,adap_estimate)
+				print(Ns[Nsi,])
+				Nsi=Nsi+1
+			}
+		}
+	}
+	Nsq=rep(qs,times=length(ks)*rep)
+	Nsk=rep(rep(ks,each=length(qs)),times=rep)
+	Nsrep=rep(1:rep,each=length(qs)*length(ks))
+	Ns=cbind(Nsrep,Nsk,Nsq,Ns)
+	colnames(Ns)=c("rep","k","q","Nnp","pica","pe","kv","gp","adap")
+	return(Ns)
+}
+
+
+
+filename="./repo/BCI real other results.RData"
+if(!file.exists(filename)){
+  allre01=mclapply(allpops,TestOnesp_other,nfocals=nfocals,ks=ks,qs=1,rep=rep,bordercorrection=10,mc.cores=20)
+  save(allre01,file=filename)
+}else{
+  load(filename)
+}
+
+
+filename2="./repo/HSD real other results.RData"
+if(!file.exists(filename2)){
+  allre201=mclapply(allpops2,TestOnesp_other,nfocals=nfocals,ks=ks,qs=1,rep=rep,bordercorrection=10,mc.cores=20,mc.preschedule=FALSE)
+  save(allre201,file=filename2)
+}else{
+  load(filename2)
+}
+
+#filename3="./repo/TTS real results.RData"
+filename3="./repo/TTS real other results.RData"
+if(!file.exists(filename3)){
+  allre301=mclapply(allpops3,TestOnesp_other,nfocals=nfocals,ks=ks,qs=1,rep=rep,bordercorrection=10,mc.cores=10,mc.preschedule=FALSE)
+  save(allre301,file=filename3)
+}else{
+  load(filename3)
+}
+
+
+```
+
+
+
+```{r}
+
+com_RRMSE2=function(allre,allpops,HSindexes){
+real_RRMSE=matrix(nrow=length(allre),ncol=6)
+for(i in 1:length(allre)){
+  if(class(allre[[i]])!="try-error"){
+    real_RRMSE[i,]=apply((allre[[i]])[,c(4:9)],2,function(x) RRMSE(focalN(allpops[[i]]),x))
+  }
+}
+
+estimators=rep(colnames(allre[[1]])[c(4:9)],each=length(allpops))
+breaks=round(quantile(HSindexes,seq(0,1,length.out=4)),2)
+breaks[4]=Inf
+HSindex_class=cut(HSindexes,breaks=breaks,include.lowest=TRUE)
+real_RRMSE=data.frame(estimator=estimators,
+                      aggre=as.factor(rep(HSindex_class,6)),RRMSE=(as.vector(real_RRMSE)))
+
+real_RRMSE$estimator=as.factor(as.character(real_RRMSE$estimator))
+
+real_mean=tapply(real_RRMSE$RRMSE,list(real_RRMSE$estimator,real_RRMSE$aggre),mean,na.rm=T)
+real_sd=tapply(real_RRMSE$RRMSE,list(real_RRMSE$estimator,real_RRMSE$aggre),sd,na.rm=T)
+
+real_RRMSE2=data.frame(estimator=rep(rownames(real_mean),times=dim(real_mean)[2]),
+            aggre=(rep(factor(colnames(real_mean),levels=colnames(real_mean)),each=dim(real_mean)[1])),
+            RRMSE_mean=as.vector(real_mean),RRMSE_sd=as.vector(real_sd))
+
+real_RRMSE2$ymax=real_RRMSE2$RRMSE_mean+real_RRMSE2$RRMSE_sd
+real_RRMSE2$ymin=real_RRMSE2$RRMSE_mean-real_RRMSE2$RRMSE_sd
+real_RRMSE2$ymin[real_RRMSE2$ymin<0]=0
+return(real_RRMSE2)
+}
+
+com_estN2=function(allre,allpops){
+  meanN_est=unlist(lapply(allre,function(x) apply(x[,c(4:9)],2,mean,na.rm=T)))
+estimator=rep(colnames(allre[[1]])[c(4:9)],times=length(meanN_est)/6)
+realN=rep(unlist(lapply(allpops,function(x) focalN(x))),each=6)
+
+real_estN=data.frame(realab=realN,estab=meanN_est,ests=estimator)
+del=which(real_estN$ests=="gp")
+real_estN=real_estN[-del,]
+real_estN$ests=as.factor(as.character(real_estN$ests))
+
+return(real_estN)
+}
+
+#debug(com_RRMSE2)
+bci_RRMSE2=com_RRMSE2(allre01,allpops,HSindexes)
+bci_estN2=com_estN2(allre01,allpops)
+hsd_RRMSE2=com_RRMSE2(allre201,allpops2,HSindexes2)
+hsd_estN2=com_estN2(allre201,allpops2)
+tts_RRMSE2=com_RRMSE2(allre301,allpops3,HSindexes3)
+tts_estN2=com_estN2(allre301,allpops3)
+
+all_RRMSE2=rbind(bci_RRMSE2,hsd_RRMSE2,tts_RRMSE2)
+all_RRMSE2$com=rep(c("BCI","HSD","TTS"),times=c(dim(bci_RRMSE2)[1],dim(hsd_RRMSE2)[1],dim(tts_RRMSE2)[1]))
+all_RRMSE2=all_RRMSE2[all_RRMSE2$estimator!="gp",]
+
+all_estN2=rbind(bci_estN2,hsd_estN2,tts_estN2)
+all_estN2$com=rep(c("BCI","HSD","TTS"),times=c(dim(bci_estN2)[1],dim(hsd_estN2)[1],dim(tts_estN2)[1]))
+
+all_RRMSE2$estimator=factor(all_RRMSE2$estimator,levels = c("adap","kv","pe","pica","Nnp"))
+all_estN2$ests=factor(all_estN2$ests,levels=c("adap","kv","pe","pica","Nnp"))
+
+levels(all_estN2$ests)=c("italic(lambda[adap])","italic(lambda[kv])",
+            "italic(lambda[pe])",
+            "italic(lambda[pica])",
+            "italic(lambda[n_ptot])")
+
+
+leglabels2=c(expression(italic(lambda[adap])),expression(italic(lambda[kv])),
+            expression(italic(lambda[pe])),
+            expression(italic(lambda[pica])),
+            expression(italic(lambda[n_ptot])))
+
+
+
+
+
+
+dodge=position_dodge(width=0.9)
+
+
+f4101=ggplot(all_RRMSE2[all_RRMSE2$estimator!="gp",],aes(x=aggre,y=RRMSE_mean,fill=estimator))+
+  geom_bar(position=dodge,stat="identity")+
+  geom_errorbar(position=dodge,aes(ymax=ymax,ymin=ymin),width=0.25)+
+  xlab("Aggregation index")+ylab("Population Mean RRMSE")+
+  scale_fill_discrete(name="Estimator",breaks=c("adap","kv","pe","pica","Nnp"),labels=leglabels2)+
+  facet_wrap(~com,scales="free_x")+
+  theme_bw()+
+  theme(plot.margin=unit(rep(1,4),"lines"),
+        panel.grid.minor=element_blank(),
+        panel.grid.major=element_blank())
+
+
+f4201=ggplot(all_estN2)+
+  geom_point(aes(x=log(realab),y=log(estab)),alpha=0.2)+
+  geom_abline(intercept=0,slope=1)+xlab("log(real population size)")+ylab("log(estimated population size)")+
+  scale_color_discrete(guide = FALSE)+facet_wrap(~ests,ncol=5,labeller = label_parsed)+
+  theme_bw()+
+  theme(plot.margin=unit(rep(1,4),"lines"),
+        legend.position='none',
+        panel.grid.minor=element_blank(),
+        panel.grid.major=element_blank())
+
+multiplot(f4201,f4101)
+
+
+```
+
+Here is the R session information for above analyses
+```{r}
+sessionInfo()
+```
